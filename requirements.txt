@@ -1,0 +1,30 @@
+# Edge-GNP: Requirements
+# Installer torch d'abord via: pip install torch torchvision torchaudio
+# Installation: pip install -r requirements.txt
+
+# Core dependencies
+numpy
+scipy
+networkx
+matplotlib
+pandas
+
+# Deep Learning
+# torch>=2.0.0
+# torch-geometric>=2.3.0
+# torch-scatter>=2.1.0
+# torch-sparse>=0.6.0
+
+# Community detection (optionnel mais recommandé)
+python-louvain
+
+# Utilities
+tqdm
+scikit-learn
+
+# Pour PyTorch Geometric, installer aussi:
+# pip install torch-scatter torch-sparse -f https://data.pyg.org/whl/torch-${TORCH}+${CUDA}.html
+# où ${TORCH} est votre version de PyTorch (ex: 2.0.0) et ${CUDA} votre version CUDA (ex: cu118)
+
+# Exemple pour CPU seulement:
+# pip install torch-scatter torch-sparse -f https://data.pyg.org/whl/torch-2.10.0+cpu.html (même version que PyTorch)

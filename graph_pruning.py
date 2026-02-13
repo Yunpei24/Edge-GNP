@@ -12,6 +12,8 @@ from typing import Tuple, List, Dict, Optional, Set
 from scipy.sparse import csr_matrix
 from scipy.sparse.linalg import eigsh
 import heapq
+import matplotlib.pyplot as plt
+import os
 
 class UnionFind:
     """Structure de données Union-Find pour la gestion des composantes connexes"""
@@ -421,12 +423,51 @@ class CommunityAwarePruning(GraphPruner):
         return algo.prune(G, node_features)
 
 
-def compare_pruning_methods(G: nx.Graph, pruning_rate: float = 0.3) -> Dict:
+
+def visualize_graph(G: nx.Graph, title: str, save_path: str):
+    """Visualise et sauvegarde le graphe"""
+    plt.figure(figsize=(10, 8))
+    pos = nx.spring_layout(G, seed=42)
+    
+    # Draw nodes
+    nx.draw_networkx_nodes(G, pos, node_size=300, node_color='skyblue', alpha=0.9)
+    
+    # Draw edges
+    nx.draw_networkx_edges(G, pos, alpha=0.5, edge_color='gray')
+    
+    # Draw labels
+    nx.draw_networkx_labels(G, pos, font_size=10)
+    
+    plt.title(f"{title}\nNodes: {G.number_of_nodes()}, Edges: {G.number_of_edges()}", fontsize=12)
+    plt.axis('off')
+    
+    # Ensure directory exists
+    os.makedirs(os.path.dirname(save_path), exist_ok=True)
+    
+    plt.savefig(save_path, dpi=300, bbox_inches='tight')
+    plt.close()
+    print(f"  -> Graphique sauvegardé: {save_path}")
+
+
+def compare_pruning_methods(G: nx.Graph, pruning_rate: float = 0.3, save_dir: Optional[str] = None) -> Dict:
+    """Compare les différentes méthodes d'élagage
+    
+    Args:
+        G: Graph to prune
+        pruning_rate: Rate of edges to prune
+        save_dir: Directory to save visualizations
+    
+    Returns:
+        Dictionary with pruning results
+    """
     results = {}
     print("\n" + "="*60)
     print(f"COMPARAISON DES MÉTHODES D'ÉLAGAGE (Taux: {pruning_rate})")
     print("="*60)
     print(f"Graphe: {G.number_of_nodes()} nœuds, {G.number_of_edges()} arêtes")
+    
+    if save_dir:
+        visualize_graph(G, "Original Graph", f"{save_dir}/original.png")
     
     methods = [
         ("Greedy (MST+Betweenness)", GreedyEdgePruning(pruning_rate, 'betweenness')),
@@ -447,6 +488,11 @@ def compare_pruning_methods(G: nx.Graph, pruning_rate: float = 0.3) -> Dict:
             }
             print(f"  -> Arêtes: {G_p.number_of_edges()}")
             print(f"  -> Clustering: {results[name]['clustering']:.4f}")
+            
+            if save_dir:
+                filename = name.split(' ')[0].lower() + "_pruned.png"
+                visualize_graph(G_p, f"Pruned by {name}", f"{save_dir}/{filename}")
+                
         except Exception as e:
             print(f"  -> Erreur: {e}")
 
@@ -455,4 +501,4 @@ def compare_pruning_methods(G: nx.Graph, pruning_rate: float = 0.3) -> Dict:
 if __name__ == "__main__":
     print("Test unitaire rapide:")
     G = nx.karate_club_graph()
-    compare_pruning_methods(G, 0.4)
+    compare_pruning_methods(G, 0.4, save_dir="Edge-GNP/images")

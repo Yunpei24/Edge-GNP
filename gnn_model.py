@@ -404,7 +404,7 @@ if __name__ == "__main__":
     
     # Entraîner un GCN
     trainer = GNNTrainer(
-        model_type='gcn',
+        model_type='sage',
         num_features=16,
         hidden_dim=32,
         num_classes=2,

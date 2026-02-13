@@ -31,6 +31,7 @@ Edge-GNP/
 ├── federated_learning.py       # Système d'apprentissage fédéré
 ├── experiments.py              # Suite d'expérimentations
 ├── requirements.txt            # Dépendances Python
+├── main.py                     # Script principal pour exécuter les expériences
 └── README.md                   # Ce fichier
 ```
 
@@ -74,9 +75,9 @@ python graph_pruning.py
 Ce script:
 - Génère un graphe de test (Karate Club)
 - Compare les 3 méthodes d'élagage:
-  1. **Greedy Edge Pruning**: Élagage glouton basé sur l'importance
+  1. **Greedy Edge Pruning (MST Backbone)**: Élagage glouton avec garantie de connectivité
   2. **Spectral Sparsification**: Préservation du spectre du Laplacien
-  3. **Community-Aware Pruning**: Préservation de la structure communautaire
+  3. **Modular Twin-Aware Pruning**: Élagage basé sur la décomposition modulaire (Habib)
 
 ### Test du GNN
 
@@ -101,35 +102,36 @@ Simule un système d'apprentissage fédéré avec:
 - Agrégation FedAvg
 - Métriques de performance et communication
 
-### Suite d'Expérimentations Complète
+### Suite d'Expérimentations Complète (Benchmark)
 
-```python
-python experiments.py
+Pour reproduire les résultats sur Cora :
+
+```bash
+python main.py --dataset cora --model gcn --experiment all --epochs 200
 ```
 
-Exécute 3 expériences:
-1. **Impact du taux d'élagage**: Évalue l'effet de ρ ∈ [0.1, 0.5]
-2. **Comparaison d'algorithmes**: Compare les 3 méthodes d'élagage
-3. **Apprentissage fédéré**: Teste différents taux d'élagage en FL
+Cela va :
+1. Télécharger le dataset Cora
+2. Entraîner un GCN sur le graphe original (Baseline)
+3. Élague le graphe avec l'approche Modulaire et ré-entraîner
+4. Lancer une simulation d'apprentissage fédéré (10 clients)
+5. Générer les courbes de résultats dans `Edge-GNP/images/`
 
 ## 📊 Algorithmes Implémentés
 
-### 1. Greedy Edge Pruning (GEP)
+### 1. Greedy Edge Pruning (MST Backbone)
 
-**Complexité:** O(ρm² + ρmn)
+**Complexité:** O(m log m)
 
 ```python
 pruner = GreedyEdgePruning(
     pruning_rate=0.3,
-    importance_metric='betweenness'  # 'betweenness', 'similarity', 'degree'
+    importance_metric='betweenness'
 )
 G_pruned = pruner.prune(G)
 ```
 
-**Métriques d'importance:**
-- **Betweenness Centrality**: BC(e) = Σ σ_st(e)/σ_st
-- **Jaccard Similarity**: Sim(u,v) = |N(u)∩N(v)|/|N(u)∪N(v)|
-- **Degree Product**: I(u,v) = deg(u) × deg(v)
+Utilise une approche de type **Kruskal inverse** (MST) pour garantir la connectivité du graphe élagué tout en maximisant l'importance des arêtes conservées.
 
 ### 2. Spectral Graph Sparsification (SGS)
 
@@ -145,19 +147,22 @@ G_pruned = pruner.prune(G)
 
 Préserve les valeurs propres dominantes du Laplacien normalisé.
 
-### 3. Community-Aware Pruning (CAP)
+### 3. Modular Twin-Aware Pruning
 
-**Complexité:** O(m log m) avec détection Louvain
+**Complexité:** O(m log m)
 
 ```python
-pruner = CommunityAwarePruning(
-    pruning_rate=0.3,
-    preserve_intra=True
+pruner = ModularAwarePruning(
+    pruning_rate=0.3
 )
 G_pruned = pruner.prune(G)
 ```
 
-Détecte les communautés et préserve prioritairement les arêtes intra-communauté.
+Inspiré par la **Décomposition Modulaire** (travaux de Michel Habib), cet algorithme identifie les **Jumeaux** (Twins) :
+- **False Twins**: N(u) = N(v)
+- **True Twins**: N[u] = N[v]
+
+Il pénalise les arêtes redondantes associées à ces structures pour un élagage structurellement intelligent.
 
 ## 📈 Modèles GNN
 
@@ -245,41 +250,46 @@ edge_gnp.plot_results(save_path='results.png')
 ```
 
 
-<!-- ## 🧪 Résultats Expérimentaux
+## 🧪 Expérimentations et Résultats
 
-Les expériences montrent:
+### 1. Classification sur Cora (Centralisé)
 
-1. **Réduction de communication:** 20-50% avec taux d'élagage ρ=0.3
-2. **Préservation de performance:** ≥90% de l'accuracy originale
-3. **Complexité:** Greedy est le plus rapide, Spectral le plus précis
+Nous avons comparé les performances du GCN sur le graphe original et les graphes élagués.
 
-### Exemple de Résultats
+| Méthode | Taux d'Élagage | Arêtes | Accuracy |
+|---------|----------------|--------|----------|
+| Original | 0% | 100% (5278) | **80.30%** |
+| Modular (Twins) | ~50% | 51.3% (2707) | 77.90% |
 
-```
-Taux d'élagage: 30%
-- Arêtes conservées: 70%
-- Test Accuracy: 0.89 (vs 0.92 sans élagage)
-- Réduction communication: 35%
-- Temps convergence: +10%
-```
+> **Observation**: L'élagage modulaire réduit le graphe de moitié tout en conservant une précision très proche de la baseline.
 
-## 📊 Métriques Évaluées
+![Centralized Results](Edge-GNP/images/centralized_results.png)
 
-- **Accuracy**: Précision de classification
-- **Communication Cost**: Nombre de paramètres + arêtes transmis
-- **Clustering Coefficient**: Préservation de la structure locale
-- **Spectral Distance**: ||λ(L) - λ(L̃)||₂
-- **Modularity**: Qualité de la structure communautaire
-- **Training Time**: Temps par round -->
+### 2. Apprentissage Fédéré
+
+Simulation avec 10 clients (partition IID du graphe Cora).
+
+- **Convergence**: 50 rounds
+- **Efficacité**: Le modèle apprend efficacement malgré la sparsification locale continue (Modular Twin-Aware Pruning).
+
+![Federated Results](Edge-GNP/images/federated_results.png)
+
+### 3. Visualisation de l'Élagage
+
+Comparaison visuelle des structures de graphes :
+
+| Original | Modular Pruned |
+|----------|----------------|
+| ![Original](Edge-GNP/images/original.png) | ![Modular](Edge-GNP/images/modular_pruned.png) |
 
 ## 🔍 Analyse de Complexité
 
 | Algorithme | Complexité Temps | Complexité Espace |
 |------------|------------------|-------------------|
-| Greedy Edge Pruning | O(ρm² + ρmn) | O(n + m) |
+| Greedy (MST Backbone) | O(m log m) | O(n + m) |
 | Spectral Sparsification | O(mkn²) | O(n²) |
-| Community-Aware | O(m log m) | O(n + m) |
-| Edge-GNP (par round) | O(N·T_prune + N·E·T_GNN) | O(Np) |
+| Modular/Twin-Aware | O(m log m) | O(n + m) |
+| Edge-GNP (par round) | O(N·m log m + N·E·T_GNN) | O(Np) |
 
 où:
 - **ρ**: Taux d'élagage

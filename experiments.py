@@ -7,6 +7,7 @@ Cours: Algorithmics, Complexity, and Graph Algorithms
 """
 
 import numpy as np
+import torch
 import networkx as nx
 import matplotlib.pyplot as plt
 import pandas as pd
@@ -448,6 +449,224 @@ def run_full_benchmark():
     print("\n" + "="*70)
     print(" EXPÉRIMENTATIONS TERMINÉES")
     print("="*70)
+
+
+
+
+def plot_centralized_results(history_original, history_pruned, save_path="Edge-GNP/images/centralized_results.png"):
+    """Plot comparison between original and pruned models"""
+    eps = range(1, len(history_original['train_acc']) + 1)
+    
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(15, 6))
+    
+    # Accuracy
+    ax1.plot(eps, history_original['train_acc'], label='Original (Train)', linestyle='--')
+    ax1.plot(eps, history_original['val_acc'], label='Original (Val)')
+    ax1.plot(eps, history_pruned['train_acc'], label='Pruned (Train)', linestyle='--')
+    ax1.plot(eps, history_pruned['val_acc'], label='Pruned (Val)')
+    ax1.set_title(f'Accuracy Comparison')
+    ax1.set_xlabel('Epoch')
+    ax1.set_ylabel('Accuracy')
+    ax1.legend()
+    ax1.grid(True, alpha=0.3)
+    
+    # Loss
+    ax2.plot(eps, history_original['loss'], label='Original', color='blue')
+    ax2.plot(eps, history_pruned['loss'], label='Pruned', color='orange')
+    ax2.set_title('Training Loss Comparison')
+    ax2.set_xlabel('Epoch')
+    ax2.set_ylabel('Loss')
+    ax2.legend()
+    ax2.grid(True, alpha=0.3)
+    
+    plt.tight_layout()
+    plt.savefig(save_path, dpi=300)
+    print(f"Figure sauvegardée: {save_path}")
+    # plt.show() # Disabled for headless environment
+
+def run_experiment(model, data, pruner, args, 
+                  run_classification=False, 
+                  run_federated=False, 
+                  run_pruning=False, 
+                  run_comparison=False):
+    """
+    Exécute l'expérience demandée par main.py
+    """
+    import os
+    os.makedirs("Edge-GNP/images", exist_ok=True)
+
+    print(f"\n{'='*60}")
+    print(f"LANCEMENT DE L'EXPÉRIENCE: {args.experiment.upper()}")
+    print(f"{'='*60}")
+    
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    print(f"Device: {device}")
+    
+    num_classes = int(data.y.max().item()) + 1
+    
+    history_original = {'loss': [], 'train_acc': [], 'val_acc': []}
+    history_pruned = {'loss': [], 'train_acc': [], 'val_acc': []}
+
+    # 1. Classification Standard (Baseline)
+    if run_classification or args.experiment == 'all':
+        print("\n--- Classification Standard (Sans Élagage) ---")
+        trainer = GNNTrainer(args.model, data.num_features, args.hidden_dim, 
+                           num_classes,
+                           args.num_layers, args.lr, args.weight_decay, device)
+        
+        # Train
+        print(f"Entraînement sur {data.num_nodes} nœuds, {data.num_edges} arêtes...")
+        for epoch in range(args.epochs):
+            loss = trainer.train_epoch(data, data.train_mask)
+            train_acc, _ = trainer.evaluate(data, data.train_mask)
+            val_acc, _ = trainer.evaluate(data, data.val_mask)
+            
+            history_original['loss'].append(loss)
+            history_original['train_acc'].append(train_acc)
+            history_original['val_acc'].append(val_acc)
+            
+            if (epoch+1) % 20 == 0:
+                print(f"Epoch {epoch+1}: Loss {loss:.4f}, Train Acc {train_acc:.4f}, Val Acc {val_acc:.4f}")
+        
+        test_acc, _ = trainer.evaluate(data, data.test_mask)
+        print(f"Test Accuracy (Original): {test_acc:.4f}")
+
+    # 2. Pruning + Classification
+    if run_pruning or args.experiment == 'all':
+        print(f"\n--- Classification avec Élagage ({args.pruning_method}, rate={args.pruning_rate}) ---")
+        
+        # Convert PyG -> NetworkX
+        from torch_geometric.utils import to_networkx
+        G = to_networkx(data, to_undirected=True)
+        print(f"Graphe original: {G.number_of_nodes()} nœuds, {G.number_of_edges()} arêtes")
+        
+        # Prune
+        start_t = time.time()
+        G_pruned = pruner.prune(G)
+        prune_time = time.time() - start_t
+        print(f"Temps d'élagage: {prune_time:.4f}s")
+        print(f"Graphe élagué: {G_pruned.number_of_edges()} arêtes ({G_pruned.number_of_edges()/G.number_of_edges()*100:.1f}%)")
+        
+        # Convert NetworkX -> PyG
+        data_pruned = networkx_to_pyg(G_pruned, data.x.numpy(), data.y.numpy())
+        data_pruned.train_mask = data.train_mask
+        data_pruned.val_mask = data.val_mask
+        data_pruned.test_mask = data.test_mask
+        
+        # Train on pruned
+        trainer_p = GNNTrainer(args.model, data.num_features, args.hidden_dim, 
+                             num_classes, args.num_layers, args.lr, args.weight_decay, device)
+                             
+        for epoch in range(args.epochs):
+            loss = trainer_p.train_epoch(data_pruned, data_pruned.train_mask)
+            train_acc, _ = trainer_p.evaluate(data_pruned, data_pruned.train_mask)
+            val_acc, _ = trainer_p.evaluate(data_pruned, data_pruned.val_mask)
+            
+            history_pruned['loss'].append(loss)
+            history_pruned['train_acc'].append(train_acc)
+            history_pruned['val_acc'].append(val_acc)
+
+            if (epoch+1) % 20 == 0:
+                print(f"Epoch {epoch+1} (Pruned): Loss {loss:.4f}, Val Acc {val_acc:.4f}")
+
+        test_acc_p, _ = trainer_p.evaluate(data_pruned, data_pruned.test_mask)
+        print(f"Test Accuracy (Pruned): {test_acc_p:.4f}")
+        
+        # Plot comparison if both ran
+        if (run_classification or args.experiment == 'all'):
+            plot_centralized_results(history_original, history_pruned)
+        
+    # 3. Federated Learning
+    if run_federated or args.experiment == 'all':
+        print("\n--- Apprentissage Fédéré ---")
+        # Initialize clients properly with data subsets for simulation
+        # For simplicity in this demo, we split the single graph into subgraphs (randomly or by community)
+        # But ExperimentSuite has its own internal generator. 
+        # Ideally we should use the Cora dataset for FL too.
+        # Let's create a custom FL setup using Cora data
+        
+        num_clients = args.num_clients
+        print(f"Distributing Cora dataset to {num_clients} clients...")
+        
+        # Quick & dirty IID partitioning of nodes
+        perm = torch.randperm(data.num_nodes)
+        split = data.num_nodes // num_clients
+        
+        clients = []
+        for i in range(num_clients):
+            indices = perm[i*split : (i+1)*split] if i < num_clients-1 else perm[i*split:]
+            
+            # Create subgraph for client
+            # Note: naive subgraphing might lose edges. 
+            # Ideally use graph partitioning (Metis) or random node sampling.
+            # Here we just take induced subgraph
+            G_full = to_networkx(data, to_undirected=True)
+            G_sub = G_full.subgraph(indices.tolist()).copy()
+            
+            # RELABEL NODES to 0..N-1 to match PyG expectations
+            mapping = {old_id: new_id for new_id, old_id in enumerate(indices.tolist())}
+            G_sub = nx.relabel_nodes(G_sub, mapping)
+            
+            # Features & Masks
+            node_features = data.x[indices].numpy()
+            labels = data.y[indices].numpy()
+            
+            # Local Masks 
+            n_local = len(indices)
+            local_train_mask = np.zeros(n_local, dtype=bool)
+            local_val_mask = np.zeros(n_local, dtype=bool)
+            local_test_mask = np.zeros(n_local, dtype=bool)
+            
+            # 60/20/20 split locally
+            p = np.random.permutation(n_local)
+            local_train_mask[p[:int(0.6*n_local)]] = True
+            local_val_mask[p[int(0.6*n_local):int(0.8*n_local)]] = True
+            local_test_mask[p[int(0.8*n_local):]] = True
+            
+            # Client Pruner
+            client_pruner = pruner if args.pruning_method != 'none' else None
+            
+            client = FederatedClient(
+                client_id=i,
+                graph=G_sub,
+                node_features=node_features,
+                labels=labels,
+                train_mask=local_train_mask,
+                val_mask=local_val_mask,
+                test_mask=local_test_mask,
+                pruner=client_pruner
+            )
+            clients.append(client)
+            
+        print(f"Created {len(clients)} clients with subgraphs.")
+
+        server = FederatedServer({
+            'model_type': args.model,
+            'num_features': data.num_features,
+            'hidden_dim': args.hidden_dim,
+            'num_classes': num_classes,
+            'num_layers': args.num_layers,
+            'learning_rate': args.lr,
+            'weight_decay': args.weight_decay
+        })
+        
+        edge_gnp = EdgeGNPFederated(
+            clients=clients,
+            server=server,
+            num_rounds=args.communication_rounds,
+            local_epochs=3, 
+            prune_every=5
+        )
+        
+        history = edge_gnp.run()
+        edge_gnp.plot_results(save_path="Edge-GNP/images/federated_results.png")
+
+    # 4. Comparison
+    if run_comparison:
+        print("\n--- Comparaison des Algorithmes ---")
+        from torch_geometric.utils import to_networkx
+        G = to_networkx(data, to_undirected=True)
+        compare_pruning_methods(G, args.pruning_rate, save_dir="Edge-GNP/images")
 
 
 if __name__ == "__main__":

@@ -1,4 +1,12 @@
-rapport_edge_gnp.tex
+*.tex
+*.out
+*.synctex.gz
+*.toc
+*.aux
+*.vrb
+*.nav
+*.snm
+*.synctex(busy)
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]

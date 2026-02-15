@@ -14,6 +14,7 @@ import pandas as pd
 from typing import Dict, List
 import time
 import json
+from torch_geometric.utils import to_networkx
 
 from graph_pruning import (
     GreedyEdgePruning, 
@@ -484,6 +485,47 @@ def plot_centralized_results(history_original, history_pruned, save_path="Edge-G
     print(f"Figure sauvegardée: {save_path}")
     # plt.show() # Disabled for headless environment
 
+def plot_federated_comparison(results: Dict[str, Dict], save_path="Edge-GNP/images/federated_comparison.png"):
+    """
+    Compare les différentes méthodes d'apprentissage fédéré.
+    results: Dict[method_name, history]
+    """
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 6))
+    
+    markers = {'Baseline': 'o', 'Greedy': 's', 'Modular': '^', 'Spectral': 'd'}
+    colors = {'Baseline': 'gray', 'Greedy': 'red', 'Modular': 'blue', 'Spectral': 'purple'}
+    
+    # 1. Accuracy
+    for name, history in results.items():
+        rounds = range(1, len(history['test_acc']) + 1)
+        marker = markers.get(name.split()[0], 'o')
+        color = colors.get(name.split()[0], None)
+        ax1.plot(rounds, history['test_acc'], label=name, marker=marker, markevery=2, color=color)
+        
+    ax1.set_title("Test Accuracy per Round")
+    ax1.set_xlabel("Communication Round")
+    ax1.set_ylabel("Accuracy")
+    ax1.grid(True, alpha=0.3)
+    ax1.legend()
+    
+    # 2. Communication Cost (Structure Only)
+    for name, history in results.items():
+        if 'comm_edges' not in history: continue
+        rounds = range(1, len(history['comm_edges']) + 1)
+        marker = markers.get(name.split()[0], 'o')
+        color = colors.get(name.split()[0], None)
+        ax2.plot(rounds, history['comm_edges'], label=name, marker=marker, markevery=2, color=color)
+        
+    ax2.set_title("Structural Communication Cost (Edges)")
+    ax2.set_xlabel("Communication Round")
+    ax2.set_ylabel("Number of Edges Transmitted")
+    ax2.grid(True, alpha=0.3)
+    ax2.legend()
+    
+    plt.tight_layout()
+    plt.savefig(save_path, dpi=300)
+    print(f"Comparaison sauvegardée: {save_path}")
+
 def run_experiment(model, data, pruner, args, 
                   run_classification=False, 
                   run_federated=False, 
@@ -536,7 +578,6 @@ def run_experiment(model, data, pruner, args,
         print(f"\n--- Classification avec Élagage ({args.pruning_method}, rate={args.pruning_rate}) ---")
         
         # Convert PyG -> NetworkX
-        from torch_geometric.utils import to_networkx
         G = to_networkx(data, to_undirected=True)
         print(f"Graphe original: {G.number_of_nodes()} nœuds, {G.number_of_edges()} arêtes")
         
@@ -578,93 +619,99 @@ def run_experiment(model, data, pruner, args,
         
     # 3. Federated Learning
     if run_federated or args.experiment == 'all':
-        print("\n--- Apprentissage Fédéré ---")
-        # Initialize clients properly with data subsets for simulation
-        # For simplicity in this demo, we split the single graph into subgraphs (randomly or by community)
-        # But ExperimentSuite has its own internal generator. 
-        # Ideally we should use the Cora dataset for FL too.
-        # Let's create a custom FL setup using Cora data
+        print("\n--- Apprentissage Fédéré Comparatif ---")
         
-        num_clients = args.num_clients
-        print(f"Distributing Cora dataset to {num_clients} clients...")
+        # Définir les méthodes à comparer
+        methods = [
+            ('Baseline', None),
+            ('Greedy', GreedyEdgePruning(pruning_rate=0.5)), 
+            ('Modular', pruner),
+            ('Spectral', SpectralGraphSparsification(pruning_rate=0.5))
+        ]
         
+        results = {}
+        
+        # Préparer les données clients UNE SEULE FOIS pour équité
+        print(f"Distributing Cora dataset to {args.num_clients} clients...")
         # Quick & dirty IID partitioning of nodes
         perm = torch.randperm(data.num_nodes)
-        split = data.num_nodes // num_clients
+        split = data.num_nodes // args.num_clients
         
-        clients = []
-        for i in range(num_clients):
-            indices = perm[i*split : (i+1)*split] if i < num_clients-1 else perm[i*split:]
-            
-            # Create subgraph for client
-            # Note: naive subgraphing might lose edges. 
-            # Ideally use graph partitioning (Metis) or random node sampling.
-            # Here we just take induced subgraph
+        client_data_configs = []
+        for i in range(args.num_clients):
+            indices = perm[i*split : (i+1)*split] if i < args.num_clients-1 else perm[i*split:]
             G_full = to_networkx(data, to_undirected=True)
             G_sub = G_full.subgraph(indices.tolist()).copy()
-            
-            # RELABEL NODES to 0..N-1 to match PyG expectations
             mapping = {old_id: new_id for new_id, old_id in enumerate(indices.tolist())}
             G_sub = nx.relabel_nodes(G_sub, mapping)
-            
-            # Features & Masks
             node_features = data.x[indices].numpy()
             labels = data.y[indices].numpy()
             
-            # Local Masks 
             n_local = len(indices)
             local_train_mask = np.zeros(n_local, dtype=bool)
             local_val_mask = np.zeros(n_local, dtype=bool)
             local_test_mask = np.zeros(n_local, dtype=bool)
-            
-            # 60/20/20 split locally
             p = np.random.permutation(n_local)
             local_train_mask[p[:int(0.6*n_local)]] = True
             local_val_mask[p[int(0.6*n_local):int(0.8*n_local)]] = True
             local_test_mask[p[int(0.8*n_local):]] = True
             
-            # Client Pruner
-            client_pruner = pruner if args.pruning_method != 'none' else None
-            
-            client = FederatedClient(
-                client_id=i,
-                graph=G_sub,
-                node_features=node_features,
-                labels=labels,
-                train_mask=local_train_mask,
-                val_mask=local_val_mask,
-                test_mask=local_test_mask,
-                pruner=client_pruner
-            )
-            clients.append(client)
-            
-        print(f"Created {len(clients)} clients with subgraphs.")
+            client_data_configs.append({
+                'graph': G_sub,
+                'features': node_features,
+                'labels': labels,
+                'masks': (local_train_mask, local_val_mask, local_test_mask)
+            })
 
-        server = FederatedServer({
-            'model_type': args.model,
-            'num_features': data.num_features,
-            'hidden_dim': args.hidden_dim,
-            'num_classes': num_classes,
-            'num_layers': args.num_layers,
-            'learning_rate': args.lr,
-            'weight_decay': args.weight_decay
-        })
-        
-        edge_gnp = EdgeGNPFederated(
-            clients=clients,
-            server=server,
-            num_rounds=args.communication_rounds,
-            local_epochs=3, 
-            prune_every=5
-        )
-        
-        history = edge_gnp.run()
-        edge_gnp.plot_results(save_path="Edge-GNP/images/federated_results.png")
+        for method_name, method_pruner in methods:
+            print(f"\n>>> Running Federated Learning with {method_name} Pruning <<<")
+            
+            # Re-create clients for each method to reset state
+            clients = []
+            for i, config in enumerate(client_data_configs):
+                client = FederatedClient(
+                    client_id=i,
+                    graph=config['graph'].copy(), # Important: copy graph
+                    node_features=config['features'],
+                    labels=config['labels'],
+                    train_mask=config['masks'][0],
+                    val_mask=config['masks'][1],
+                    test_mask=config['masks'][2],
+                    pruner=method_pruner
+                )
+                clients.append(client)
+                
+            server = FederatedServer({
+                'model_type': args.model,
+                'num_features': data.num_features,
+                'hidden_dim': args.hidden_dim, # Use args
+                'num_classes': num_classes,
+                'num_layers': args.num_layers,
+                'learning_rate': args.lr,
+                'weight_decay': args.weight_decay
+            })
+            
+            # Use fewer rounds for demo speed if needed, but stick to args
+            edge_gnp = EdgeGNPFederated(
+                clients=clients,
+                server=server,
+                num_rounds=args.communication_rounds,
+                local_epochs=3, 
+                prune_every=5
+            )
+            
+            history = edge_gnp.run()
+            results[method_name] = history
+            
+            # Save individual plot too
+            edge_gnp.plot_results(save_path=f"Edge-GNP/images/federated_{method_name.lower()}.png")
+
+        # Plot comparison
+        plot_federated_comparison(results, save_path="Edge-GNP/images/federated_comparison.png")
 
     # 4. Comparison
     if run_comparison:
         print("\n--- Comparaison des Algorithmes ---")
-        from torch_geometric.utils import to_networkx
         G = to_networkx(data, to_undirected=True)
         compare_pruning_methods(G, args.pruning_rate, save_dir="Edge-GNP/images")
 

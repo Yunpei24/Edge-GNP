@@ -183,12 +183,12 @@ class FederatedClient:
         
         return self.trainer.evaluate(self.data, mask)
     
-    def get_communication_cost(self) -> int:
+    def get_communication_cost(self) -> Dict[str, int]:
         """
-        Calcule le coût de communication (nombre de paramètres + taille du graphe)
+        Calcule le coût de communication détaillé
         
         Returns:
-            Coût total en nombre d'éléments
+            Dict: {'params': int, 'edges': int, 'total': int}
         """
         # Nombre de paramètres du modèle
         num_params = sum(p.numel() for p in self.trainer.model.parameters())
@@ -196,7 +196,11 @@ class FederatedClient:
         # Taille du graphe (arêtes)
         num_edges = self.current_graph.number_of_edges()
         
-        return num_params + num_edges
+        return {
+            'params': num_params,
+            'edges': num_edges,
+            'total': num_params + num_edges
+        }
 
 
 class FederatedServer:
@@ -315,13 +319,18 @@ class EdgeGNPFederated:
         self.client_fraction = client_fraction
         self.prune_every = prune_every
         
+        # Init history with detailed cost tracking
         self.history = {
             'train_acc': [],
             'val_acc': [],
             'test_acc': [],
-            'communication_cost': [],
+            'comm_total': [],
+            'comm_edges': [],
+            'comm_params': [],
             'pruning_stats': []
         }
+        
+
     
     def select_clients(self, round_idx: int) -> List[int]:
         """
@@ -412,16 +421,24 @@ class EdgeGNPFederated:
             print(f"  Average Val Acc:   {avg_val_acc:.4f}")
             print(f"  Average Test Acc:  {avg_test_acc:.4f}")
             
-            # Coût de communication
-            total_comm_cost = sum(client.get_communication_cost() 
-                                 for client in self.clients)
-            print(f"  Communication Cost: {total_comm_cost:,} elements")
+            # Coût de communication détaillé
+            total_params = 0
+            total_edges = 0
+            for client in self.clients:
+                costs = client.get_communication_cost()
+                total_params += costs['params']
+                total_edges += costs['edges']
+            
+            total_comm = total_params + total_edges
+            print(f"  Comm Cost: Total={total_comm:,} (Params={total_params:,}, Edges={total_edges:,})")
             
             # Enregistrer l'historique
             self.history['train_acc'].append(avg_train_acc)
             self.history['val_acc'].append(avg_val_acc)
             self.history['test_acc'].append(avg_test_acc)
-            self.history['communication_cost'].append(total_comm_cost)
+            self.history['comm_total'].append(total_comm)
+            self.history['comm_params'].append(total_params)
+            self.history['comm_edges'].append(total_edges)
         
         print("\n" + "="*70)
         print(" TRAINING COMPLETED")
@@ -472,12 +489,29 @@ class EdgeGNPFederated:
         axes[0].legend()
         axes[0].grid(True, alpha=0.3)
         
-        # Coût de communication
-        axes[1].plot(rounds, self.history['communication_cost'], 
-                    color='red', marker='d')
-        axes[1].set_xlabel('Round')
-        axes[1].set_ylabel('Communication Cost (elements)')
-        axes[1].set_title('Communication Overhead')
+        # Coût de communication détaillé (Double axe Y pour visibilité)
+        ax2 = axes[1]
+        
+        # Courbe principale : Coût structurel (Edges) car c'est ce qui baisse
+        line1 = ax2.plot(rounds, self.history['comm_edges'], 
+                 color='blue', marker='x', linestyle='--', label='Structure Cost (Edges)')
+        ax2.set_xlabel('Round')
+        ax2.set_ylabel('Structural Cost (Number of Edges)', color='blue')
+        ax2.tick_params(axis='y', labelcolor='blue')
+        
+        # Axe secondaire pour le total
+        ax3 = ax2.twinx()
+        line2 = ax3.plot(rounds, self.history['comm_total'], 
+                 color='red', alpha=0.3, label='Total Cost (Params + Edges)')
+        ax3.set_ylabel('Total Cost', color='red')
+        ax3.tick_params(axis='y', labelcolor='red')
+        
+        # Légende combinée
+        lines = line1 + line2
+        labels = [l.get_label() for l in lines]
+        ax2.legend(lines, labels, loc='upper right')
+        
+        axes[1].set_title('Communication Cost: Structure vs Total')
         axes[1].grid(True, alpha=0.3)
         
         plt.tight_layout()

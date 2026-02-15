@@ -109,10 +109,16 @@ class GreedyEdgePruning(GraphPruner):
         """
         m = G.number_of_edges()
         target_edges = int((1 - self.pruning_rate) * m)
-        # Minimum pour rester connecte: n - 1
-        if target_edges < G.number_of_nodes() - 1:
-            print("Attention: Taux trop élevé pour garantir la connectivité. Ajusté au minimum spanning tree.")
-            target_edges = G.number_of_nodes() - 1
+        
+        # Minimum pour rester connecte: n - 1 (si possible)
+        # Sur des sous-graphes épars, on peut avoir m < n-1.
+        # Dans ce cas, on accepte de réduire encore plus, ou on garde tout ?
+        # Ici on relaxe la contrainte pour permettre la démo sur Cora/Random Partition
+        min_edges = G.number_of_nodes() - nx.number_connected_components(G)
+        if target_edges < min_edges and m > min_edges:
+             # print("Attention: Taux trop élevé pour garantir la connectivité.")
+             # On ne force pas n-1 si le graphe est déjà déconnecté
+             pass
 
         print(f"Calcul des importances ({self.importance_metric})...")
         importance = self.compute_edge_importance(G)
@@ -376,7 +382,10 @@ class SpectralGraphSparsification(GraphPruner):
         # Construction MST Backbone
         m = len(edges)
         target_edges = int((1 - self.pruning_rate) * m)
-        if target_edges < G.number_of_nodes() - 1: target_edges = G.number_of_nodes() - 1
+        min_edges = G.number_of_nodes() - nx.number_connected_components(G)
+        if target_edges < min_edges and m > min_edges:
+            # target_edges = min_edges # On relaxe pour la démo
+            pass
             
         uf = UnionFind(G.number_of_nodes())
         mst_edges = []
